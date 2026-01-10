@@ -1,6 +1,6 @@
 import { fetchAllTickets } from "@/lib/fetchTickets";
 import { groupHoursByDayAndShift, totalHours } from "@/lib/productionHours";
-import ProductionHoursChart from "@/components/dashboard/ProductionHoursChart";
+import ProductionHoursChart from "@/app/production-hours/ProductionHoursChart";
 import { headers } from "next/headers";
 
 function toJB2DateTimeZ(d: Date) {

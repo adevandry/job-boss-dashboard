@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import ProductionChart from "@/components/dashboard/ProductionChart";
+import ProductionHoursChart from "@/components/dashboard/ProductionHoursChart";
 
 
 type DateRange = {
@@ -186,10 +186,11 @@ export default function Page() {
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white border-b shadow-sm">
-        <div className="max-w-7xl mx-auto px-6 py-4">
+        <div className="max-w-[1600px] mx-auto p-6 space-y-6">
           <div className="flex items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl font-bold">Production Dashboard</h1>
+              <p>Real-time manufacturing analytics and insights, custom-made for DeKing Precision</p>
               <p className="text-sm text-slate-600 mt-1">{rangeLabel}</p>
             </div>
 
@@ -212,11 +213,10 @@ export default function Page() {
               />
               <button
                 onClick={fetchTimeTickets}
-                className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700"
                 disabled={loading}
-              >
+                className="px-4 py-2 rounded text-white bg-[#3E637D] hover:bg-[#0F2230] disabled:opacity-60 disabled:cursor-not-allowed">
                 {loading ? "Loading..." : "Refresh"}
-              </button>
+            </button>
             </div>
           </div>
 
@@ -228,7 +228,7 @@ export default function Page() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto p-6 space-y-6">
+      <main className="max-w-[1600px] mx-auto p-6 space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <KpiCard title="Department Efficiency">
             <KpiRow label="Morning Shift" value="-" />
@@ -248,7 +248,14 @@ export default function Page() {
           </KpiCard>
         </div>
 
-        <ProductionChart data={productionRows} />
+        <ProductionHoursChart
+  rows={productionRows.map((r) => ({
+    day: r.date, // chart expects "day"
+    morning: r.morning ?? 0,
+    night: r.night ?? 0,
+    lightsOut: r.lightsOut ?? 0,
+  }))}
+/>
 
         <Section title="Job Data">
           <div className="text-slate-500">Table placeholder</div>
