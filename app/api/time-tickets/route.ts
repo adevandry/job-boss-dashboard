@@ -14,7 +14,7 @@ function normalizeJB2Query(searchParams: URLSearchParams) {
       const op = m[2];
       const newKey = `${field}[${op}]`;
 
-      // If the UI sends date-only, JB2 is picky. Convert to ISO Z range.
+      // If UI sends date-only (YYYY-MM-DD), JB2 wants Z format
       if (field === "ticketDate" && (op === "gte" || op === "lte") && value.length === 10) {
         const v = op === "gte" ? `${value}T00:00:00Z` : `${value}T23:59:59Z`;
         out.set(newKey, v);
