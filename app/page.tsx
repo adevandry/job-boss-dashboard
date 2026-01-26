@@ -11,6 +11,7 @@ type DateRange = {
 
 type TimeTicket = {
   employeeCode?: number | string;
+  employeeName?: string;
   shift?: number | string;
   ticketDate?: string;
   manHours?: number;
@@ -30,6 +31,44 @@ type ProductionRow = {
 const SWISS_WORK_CENTERS = [
   10, 100, 101, 102, 103, 1001, 1010, 8001, 9104, 9106, 9108, 9110,
 ];
+
+// Put these in app/page.tsx, under SWISS_WORK_CENTERS, above Home()
+
+const EXCLUDED_EMPLOYEE_CODES = new Set(["1041", "1441", "106"]); // Yolanda, Emelio, Eliseo
+
+function isSwissDepartmentTicket(t: any) {
+  const empCode = String(t.employeeCode ?? "").trim();
+  if (EXCLUDED_EMPLOYEE_CODES.has(empCode)) return false;
+
+  return SWISS_WORK_CENTERS.includes(Number(t.workCenter));
+}
+
+// For Production Hours (per your brother): "Actual hours is machineHours"
+function getProductionActualHours(t: any) {
+  const machine = Number(t.machineHours || 0);
+
+  const good = Number(t.piecesFinished || 0);
+  const scrap = Number(t.piecesScrapped || 0);
+  const totalPieces = good + scrap;
+
+  const emp = String(t.employeeCode ?? "").trim();
+
+  // If Lights Out stores machineHours as "hours per part", multiply.
+  // This heuristic prevents totals from being tiny when pieces are large.
+  if (emp === "9999" && totalPieces > 0 && machine > 0 && machine < 1) {
+    return totalPieces * machine;
+  }
+
+  return machine;
+}
+
+// Estimated (expected) production hours from cycle time
+// If you want "good only" for estimated hours, use good instead of totalPieces.
+function getProductionEstimatedHours(t: any) {
+  const good = Number(t.piecesFinished || 0);
+  const cycle = Number(t.cycleTime || 0); // hours per part, per your brother
+  return good * cycle;
+}
 
 function toLocalYmd(d: Date) {
   const yyyy = d.getFullYear();
@@ -60,7 +99,8 @@ function getCustomShift(t: TimeTicket) {
 
   if (shift === 1) return "morning";
   if (shift === 3) return emp === "9999" ? "lightsOut" : "night";
-  if (shift === 2) return "night";
+
+  // David: do not use 2
   return null;
 }
 
@@ -92,16 +132,20 @@ function transformToProductionHours(
     const date = t.ticketDate?.split("T")[0];
     if (!date) continue;
     if (!grouped[date]) continue;
-
-    const hours = getClockHours(t);
+  
+    const hours = getProductionActualHours(t);
     const cs = getCustomShift(t);
-
+  
+    if (!cs) continue; // skips shift 2
+  
     if (cs === "morning") grouped[date].morning += hours;
     else if (cs === "night") grouped[date].night += hours;
     else if (cs === "lightsOut") grouped[date].lightsOut += hours;
   }
 
-  return days.map((d) => grouped[d]);
+  return days
+  .map((d) => grouped[d])
+  .filter((r) => (r.morning + r.night + r.lightsOut) > 0);
 }
 
 export default function Page() {
@@ -155,10 +199,18 @@ export default function Page() {
         ? data.data
         : [];
 
+        console.log("First 5 tickets:", tickets.slice(0, 5));
+console.log(
+  "Shift values found:",
+  Array.from(new Set(tickets.map((t: any) => t.shift))).sort()
+);
+
       // Safeguard filter in case upstream ignores filters
-      const swissSet = new Set(SWISS_WORK_CENTERS);
-      const swissTickets = tickets.filter((t) =>
-        swissSet.has(Number((t as any).workCenter))
+      const swissTickets = tickets.filter((t: any) => isSwissDepartmentTicket(t));
+
+      console.log(
+        "Shift values in range:",
+        Array.from(new Set(tickets.map((t: any) => Number(t.shift)).filter(Boolean))).sort()
       );
 
       const rows = transformToProductionHours(

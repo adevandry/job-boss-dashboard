@@ -6,21 +6,28 @@ type JB2DetailRow = {
   ticketDate?: string | null;
   shift?: number | null;
 
-  employeeCode?: number | null;
+  employeeCode?: number | string | null;
   employeeName?: string | null;
 
   jobNumber?: string | null;
-  workCenter?: number | null;
-  operationNumber?: number | null;
+  workCenter?: number | string | null;
+  operationNumber?: number | string | null;
 
-  manHours?: number | null;
-  machineHours?: number | null;
+  manHours?: number | string | null;
+  machineHours?: number | string | null;
 
-  piecesFinished?: number | null;
-  piecesScrapped?: number | null;
+  piecesFinished?: number | string | null;
+  piecesScrapped?: number | string | null;
 
+  workCode?: string | null; // may exist, we safely ignore if missing
   comments?: string | null;
 };
+
+const SWISS_WORK_CENTERS = [
+  10, 100, 101, 102, 103, 1001, 1010, 8001, 9104, 9106, 9108, 9110,
+];
+
+const EXCLUDED_EMPLOYEE_CODES = new Set(["1041", "1441", "106"]); // Yolanda, Emelio, Eliseo
 
 function toJB2DateTimeZ(d: Date) {
   return d.toISOString().replace(".000Z", "Z");
@@ -49,10 +56,56 @@ function normalizeShift(raw: string | undefined): ShiftKey | null {
 }
 
 function shiftLabel(s: ShiftKey | null) {
-  if (s === "morning") return "Day";
+  if (s === "morning") return "Morning";
   if (s === "night") return "Evening";
   if (s === "lightsOut") return "Lights Out";
   return "";
+}
+
+function toNum(v: unknown) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function empCodeStr(r: JB2DetailRow) {
+  return String(r.employeeCode ?? "").trim();
+}
+
+function isSwissRow(r: JB2DetailRow) {
+  const wc = toNum(r.workCenter);
+  if (!SWISS_WORK_CENTERS.includes(wc)) return false;
+
+  const emp = empCodeStr(r);
+  if (EXCLUDED_EMPLOYEE_CODES.has(emp)) return false;
+
+  // JobBOSS report excludes REWORK. If workCode exists, honor it.
+  const workCode = String(r.workCode ?? "").trim().toUpperCase();
+  if (workCode === "REWORK") return false;
+
+  return true;
+}
+
+// Per your rule: "Actual production hours = machineHours"
+// Special case: Lights Out (9999) sometimes stores "hours per part" in machineHours, multiply by pieces.
+function getProductionHours(r: JB2DetailRow) {
+  const emp = empCodeStr(r);
+  const machine = toNum(r.machineHours);
+
+  const good = toNum(r.piecesFinished);
+  const scrap = toNum(r.piecesScrapped);
+  const totalPieces = good + scrap;
+
+  if (emp === "9999" && totalPieces > 0 && machine > 0 && machine < 1) {
+    return totalPieces * machine;
+  }
+
+  return machine;
+}
+
+function sum(vals: Array<number>) {
+  let total = 0;
+  for (const v of vals) total += v || 0;
+  return total;
 }
 
 async function fetchDayRows(params: { baseUrl: string; startIso: string; endIso: string }) {
@@ -61,12 +114,18 @@ async function fetchDayRows(params: { baseUrl: string; startIso: string; endIso:
   const all: JB2DetailRow[] = [];
 
   while (true) {
-    const qs = new URLSearchParams({
-      "ticketDate[gte]": params.startIso,
-      "ticketDate[lte]": params.endIso,
-      take: String(take),
-      skip: String(skip),
-    });
+    // Use the same filter style you use on the main page,
+    // so the API route has the best chance of filtering server-side.
+    const qs = new URLSearchParams();
+
+    qs.append("filters[workCenter][in]", SWISS_WORK_CENTERS.join("|"));
+    qs.append("filters[ticketDate][gte]", params.startIso);
+    qs.append("filters[ticketDate][lte]", params.endIso);
+    qs.append("sort", "ticketDate");
+
+    // Keep paging controls if your API supports them
+    qs.append("take", String(take));
+    qs.append("skip", String(skip));
 
     const url = `${params.baseUrl}/api/time-tickets?${qs.toString()}`;
     const res = await fetch(url, { cache: "no-store" });
@@ -76,8 +135,15 @@ async function fetchDayRows(params: { baseUrl: string; startIso: string; endIso:
       throw new Error(`Fetch failed: ${res.status} ${text}`);
     }
 
-    const json = (await res.json()) as { Data?: JB2DetailRow[] };
-    const page = json.Data ?? [];
+    const json = (await res.json()) as any;
+
+    const page: JB2DetailRow[] = Array.isArray(json)
+      ? json
+      : Array.isArray(json.Data)
+      ? json.Data
+      : Array.isArray(json.data)
+      ? json.data
+      : [];
 
     all.push(...page);
 
@@ -86,12 +152,6 @@ async function fetchDayRows(params: { baseUrl: string; startIso: string; endIso:
   }
 
   return all;
-}
-
-function sum(vals: Array<number | null | undefined>) {
-  let total = 0;
-  for (const v of vals) total += Number(v ?? 0) || 0;
-  return total;
 }
 
 export default async function ProductionHoursDetailsPage({
@@ -105,7 +165,6 @@ export default async function ProductionHoursDetailsPage({
 
   const rawDay = sp.day ?? sp.date ?? "";
   const rawDayStr = decodeURIComponent(String(rawDay)).trim();
-
   const day = rawDayStr.slice(0, 10);
 
   const isValidDay =
@@ -126,7 +185,6 @@ export default async function ProductionHoursDetailsPage({
   }
 
   const shift = normalizeShift(sp.shift);
-
   const { startIso, endIso } = dayRangeUTC(day);
 
   const h = await headers();
@@ -136,19 +194,23 @@ export default async function ProductionHoursDetailsPage({
 
   const allRows = await fetchDayRows({ baseUrl, startIso, endIso });
 
-  // Apply your shift rules
-  let rows = allRows;
+  // Safeguard filters, even if API already filtered
+  const swissRows = allRows.filter(isSwissRow);
+
+  // Apply shift rules
+  let rows = swissRows;
 
   if (shift === "lightsOut") {
-    rows = allRows.filter((r) => r.shift === 3 && r.employeeCode === 9999);
+    rows = swissRows.filter((r) => toNum(r.shift) === 3 && empCodeStr(r) === "9999");
   } else if (shift === "night") {
-    rows = allRows.filter((r) => r.shift === 3 && r.employeeCode !== 9999);
+    rows = swissRows.filter((r) => toNum(r.shift) === 3 && empCodeStr(r) !== "9999");
   } else if (shift === "morning") {
-    rows = allRows.filter((r) => r.shift === 1 && r.employeeCode !== 9999);
+    rows = swissRows.filter((r) => toNum(r.shift) === 1 && empCodeStr(r) !== "9999");
   }
 
-  const totalMan = sum(rows.map((r) => r.manHours));
-  const totalMach = sum(rows.map((r) => r.machineHours));
+  const totalClock = sum(rows.map((r) => toNum(r.manHours)));
+  const totalMach = sum(rows.map((r) => toNum(r.machineHours)));
+  const totalProd = sum(rows.map((r) => getProductionHours(r)));
 
   return (
     <div style={{ padding: 16 }}>
@@ -157,8 +219,13 @@ export default async function ProductionHoursDetailsPage({
       <div>Shift: {shiftLabel(shift)}</div>
 
       <div style={{ marginTop: 10 }}>
-        Tickets: {rows.length}, Total Man Hrs: {totalMan.toFixed(2)}, Total Mach Hrs:{" "}
-        {totalMach.toFixed(2)}
+        Tickets: {rows.length}
+        {", "}
+        Total Production Hrs: {totalProd.toFixed(2)}
+        {", "}
+        Total Mach Hrs: {totalMach.toFixed(2)}
+        {", "}
+        Total Clock Hrs: {totalClock.toFixed(2)}
       </div>
 
       {rows.length === 0 ? (
@@ -173,7 +240,7 @@ export default async function ProductionHoursDetailsPage({
             <th style={{ padding: "8px 6px" }}>Job</th>
             <th style={{ padding: "8px 6px" }}>WC</th>
             <th style={{ padding: "8px 6px" }}>Op</th>
-            <th style={{ padding: "8px 6px" }}>Man Hrs</th>
+            <th style={{ padding: "8px 6px" }}>Clock Hrs</th>
             <th style={{ padding: "8px 6px" }}>Mach Hrs</th>
             <th style={{ padding: "8px 6px" }}>Good</th>
             <th style={{ padding: "8px 6px" }}>Scrap</th>
@@ -185,13 +252,13 @@ export default async function ProductionHoursDetailsPage({
             <tr key={idx} style={{ borderBottom: "1px solid #eee" }}>
               <td style={{ padding: "8px 6px" }}>{String(r.ticketDate ?? "").slice(11, 19)}</td>
               <td style={{ padding: "8px 6px" }}>
-                {r.employeeName ?? ""} ({r.employeeCode ?? ""})
+                {r.employeeName ?? ""} ({empCodeStr(r)})
               </td>
               <td style={{ padding: "8px 6px" }}>{r.jobNumber ?? ""}</td>
-              <td style={{ padding: "8px 6px" }}>{r.workCenter ?? ""}</td>
+              <td style={{ padding: "8px 6px" }}>{toNum(r.workCenter) || ""}</td>
               <td style={{ padding: "8px 6px" }}>{r.operationNumber ?? ""}</td>
-              <td style={{ padding: "8px 6px" }}>{Number(r.manHours ?? 0).toFixed(2)}</td>
-              <td style={{ padding: "8px 6px" }}>{Number(r.machineHours ?? 0).toFixed(2)}</td>
+              <td style={{ padding: "8px 6px" }}>{toNum(r.manHours).toFixed(2)}</td>
+              <td style={{ padding: "8px 6px" }}>{toNum(r.machineHours).toFixed(2)}</td>
               <td style={{ padding: "8px 6px" }}>{r.piecesFinished ?? ""}</td>
               <td style={{ padding: "8px 6px" }}>{r.piecesScrapped ?? ""}</td>
               <td style={{ padding: "8px 6px" }}>{r.comments ?? ""}</td>
