@@ -6,20 +6,21 @@ type JB2DetailRow = {
   ticketDate?: string | null;
   shift?: number | null;
 
-  employeeCode?: number | string | null;
+  employeeCode?: number | null;
   employeeName?: string | null;
 
   jobNumber?: string | null;
-  workCenter?: number | string | null;
-  operationNumber?: number | string | null;
+  workCenter?: number | null;
+  operationNumber?: number | null;
 
-  manHours?: number | string | null;
-  machineHours?: number | string | null;
+  manHours?: number | null;
+  machineHours?: number | null;
 
-  piecesFinished?: number | string | null;
-  piecesScrapped?: number | string | null;
+  piecesFinished?: number | null;
+  piecesScrapped?: number | null;
 
-  workCode?: string | null; // may exist, we safely ignore if missing
+  cycleTime?: number | null; // JobBOSS appears to return this in minutes per part
+
   comments?: string | null;
 };
 
@@ -57,55 +58,9 @@ function normalizeShift(raw: string | undefined): ShiftKey | null {
 
 function shiftLabel(s: ShiftKey | null) {
   if (s === "morning") return "Morning";
-  if (s === "night") return "Evening";
+  if (s === "night") return "Night";
   if (s === "lightsOut") return "Lights Out";
   return "";
-}
-
-function toNum(v: unknown) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function empCodeStr(r: JB2DetailRow) {
-  return String(r.employeeCode ?? "").trim();
-}
-
-function isSwissRow(r: JB2DetailRow) {
-  const wc = toNum(r.workCenter);
-  if (!SWISS_WORK_CENTERS.includes(wc)) return false;
-
-  const emp = empCodeStr(r);
-  if (EXCLUDED_EMPLOYEE_CODES.has(emp)) return false;
-
-  // JobBOSS report excludes REWORK. If workCode exists, honor it.
-  const workCode = String(r.workCode ?? "").trim().toUpperCase();
-  if (workCode === "REWORK") return false;
-
-  return true;
-}
-
-// Per your rule: "Actual production hours = machineHours"
-// Special case: Lights Out (9999) sometimes stores "hours per part" in machineHours, multiply by pieces.
-function getProductionHours(r: JB2DetailRow) {
-  const emp = empCodeStr(r);
-  const machine = toNum(r.machineHours);
-
-  const good = toNum(r.piecesFinished);
-  const scrap = toNum(r.piecesScrapped);
-  const totalPieces = good + scrap;
-
-  if (emp === "9999" && totalPieces > 0 && machine > 0 && machine < 1) {
-    return totalPieces * machine;
-  }
-
-  return machine;
-}
-
-function sum(vals: Array<number>) {
-  let total = 0;
-  for (const v of vals) total += v || 0;
-  return total;
 }
 
 async function fetchDayRows(params: { baseUrl: string; startIso: string; endIso: string }) {
@@ -114,18 +69,12 @@ async function fetchDayRows(params: { baseUrl: string; startIso: string; endIso:
   const all: JB2DetailRow[] = [];
 
   while (true) {
-    // Use the same filter style you use on the main page,
-    // so the API route has the best chance of filtering server-side.
-    const qs = new URLSearchParams();
-
-    qs.append("filters[workCenter][in]", SWISS_WORK_CENTERS.join("|"));
-    qs.append("filters[ticketDate][gte]", params.startIso);
-    qs.append("filters[ticketDate][lte]", params.endIso);
-    qs.append("sort", "ticketDate");
-
-    // Keep paging controls if your API supports them
-    qs.append("take", String(take));
-    qs.append("skip", String(skip));
+    const qs = new URLSearchParams({
+      "ticketDate[gte]": params.startIso,
+      "ticketDate[lte]": params.endIso,
+      take: String(take),
+      skip: String(skip),
+    });
 
     const url = `${params.baseUrl}/api/time-tickets?${qs.toString()}`;
     const res = await fetch(url, { cache: "no-store" });
@@ -135,15 +84,8 @@ async function fetchDayRows(params: { baseUrl: string; startIso: string; endIso:
       throw new Error(`Fetch failed: ${res.status} ${text}`);
     }
 
-    const json = (await res.json()) as any;
-
-    const page: JB2DetailRow[] = Array.isArray(json)
-      ? json
-      : Array.isArray(json.Data)
-      ? json.Data
-      : Array.isArray(json.data)
-      ? json.data
-      : [];
+    const json = (await res.json()) as { Data?: JB2DetailRow[]; data?: JB2DetailRow[] };
+    const page = (json.Data ?? json.data ?? []) as JB2DetailRow[];
 
     all.push(...page);
 
@@ -152,6 +94,59 @@ async function fetchDayRows(params: { baseUrl: string; startIso: string; endIso:
   }
 
   return all;
+}
+
+function sum(vals: Array<number | null | undefined>) {
+  let total = 0;
+  for (const v of vals) total += Number(v ?? 0) || 0;
+  return total;
+}
+
+function isSwissDepartmentRow(r: JB2DetailRow) {
+  const empCode = String(r.employeeCode ?? "").trim();
+  if (!empCode) return false;
+  if (EXCLUDED_EMPLOYEE_CODES.has(empCode)) return false;
+
+  const wc = Number(r.workCenter ?? 0);
+  return SWISS_WORK_CENTERS.includes(wc);
+}
+
+// Actual hours for this dashboard should follow the same logic as the main chart.
+// For most employees, actual hours are machineHours.
+// For Lights Out (employee 9999), JobBOSS sometimes stores machineHours as hours-per-part,
+// so when machineHours < 1 and there are pieces, multiply by total pieces.
+function getActualHours(r: JB2DetailRow) {
+  const machine = Number(r.machineHours ?? 0) || 0;
+
+  const good = Number(r.piecesFinished ?? 0) || 0;
+  const scrap = Number(r.piecesScrapped ?? 0) || 0;
+  const totalPieces = good + scrap;
+
+  const emp = String(r.employeeCode ?? "").trim();
+
+  if (emp === "9999" && totalPieces > 0 && machine > 0 && machine < 1) {
+    return totalPieces * machine;
+  }
+
+  return machine;
+}
+
+// Estimated hours: good parts * cycle time.
+// JobBOSS appears to return cycleTime in MINUTES per part (not hours).
+function getEstimatedHours(r: JB2DetailRow) {
+  const good = Number(r.piecesFinished ?? 0) || 0;
+  const cycleMinutes = Number(r.cycleTime ?? 0) || 0;
+
+  // minutes -> hours
+  return good * (cycleMinutes / 60);
+}
+
+function fmt2(n: number) {
+  return (Number(n) || 0).toFixed(2);
+}
+
+function fmt6(n: number) {
+  return (Number(n) || 0).toFixed(6);
 }
 
 export default async function ProductionHoursDetailsPage({
@@ -194,23 +189,20 @@ export default async function ProductionHoursDetailsPage({
 
   const allRows = await fetchDayRows({ baseUrl, startIso, endIso });
 
-  // Safeguard filters, even if API already filtered
-  const swissRows = allRows.filter(isSwissRow);
+  // First: restrict to Swiss WCs and exclude the three employees.
+  let rows = allRows.filter(isSwissDepartmentRow);
 
-  // Apply shift rules
-  let rows = swissRows;
-
+  // Then apply shift rules
   if (shift === "lightsOut") {
-    rows = swissRows.filter((r) => toNum(r.shift) === 3 && empCodeStr(r) === "9999");
+    rows = rows.filter((r) => Number(r.shift) === 3 && Number(r.employeeCode) === 9999);
   } else if (shift === "night") {
-    rows = swissRows.filter((r) => toNum(r.shift) === 3 && empCodeStr(r) !== "9999");
+    rows = rows.filter((r) => Number(r.shift) === 3 && Number(r.employeeCode) !== 9999);
   } else if (shift === "morning") {
-    rows = swissRows.filter((r) => toNum(r.shift) === 1 && empCodeStr(r) !== "9999");
+    rows = rows.filter((r) => Number(r.shift) === 1 && Number(r.employeeCode) !== 9999);
   }
 
-  const totalClock = sum(rows.map((r) => toNum(r.manHours)));
-  const totalMach = sum(rows.map((r) => toNum(r.machineHours)));
-  const totalProd = sum(rows.map((r) => getProductionHours(r)));
+  const totalActual = rows.reduce((acc, r) => acc + getActualHours(r), 0);
+  const totalEstimated = rows.reduce((acc, r) => acc + getEstimatedHours(r), 0);
 
   return (
     <div style={{ padding: 16 }}>
@@ -219,13 +211,9 @@ export default async function ProductionHoursDetailsPage({
       <div>Shift: {shiftLabel(shift)}</div>
 
       <div style={{ marginTop: 10 }}>
-        Tickets: {rows.length}
-        {", "}
-        Total Production Hrs: {totalProd.toFixed(2)}
-        {", "}
-        Total Mach Hrs: {totalMach.toFixed(2)}
-        {", "}
-        Total Clock Hrs: {totalClock.toFixed(2)}
+        <div>Tickets: {rows.length}</div>
+        <div>Total Actual Hrs (machineHours): {fmt2(totalActual)}</div>
+        <div>Total Estimated Hrs (good x cycleTime): {fmt2(totalEstimated)}</div>
       </div>
 
       {rows.length === 0 ? (
@@ -236,34 +224,44 @@ export default async function ProductionHoursDetailsPage({
         <thead>
           <tr style={{ textAlign: "left", borderBottom: "2px solid #ccc" }}>
             <th style={{ padding: "8px 6px" }}>Time</th>
+            <th style={{ padding: "8px 6px" }}>Shift</th>
             <th style={{ padding: "8px 6px" }}>Employee</th>
             <th style={{ padding: "8px 6px" }}>Job</th>
             <th style={{ padding: "8px 6px" }}>WC</th>
             <th style={{ padding: "8px 6px" }}>Op</th>
-            <th style={{ padding: "8px 6px" }}>Clock Hrs</th>
-            <th style={{ padding: "8px 6px" }}>Mach Hrs</th>
+            <th style={{ padding: "8px 6px" }}>Actual Hrs</th>
+            <th style={{ padding: "8px 6px" }}>Est Hrs</th>
+            <th style={{ padding: "8px 6px" }}>Cycle (min/part)</th>
             <th style={{ padding: "8px 6px" }}>Good</th>
             <th style={{ padding: "8px 6px" }}>Scrap</th>
             <th style={{ padding: "8px 6px" }}>Comments</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((r, idx) => (
-            <tr key={idx} style={{ borderBottom: "1px solid #eee" }}>
-              <td style={{ padding: "8px 6px" }}>{String(r.ticketDate ?? "").slice(11, 19)}</td>
-              <td style={{ padding: "8px 6px" }}>
-                {r.employeeName ?? ""} ({empCodeStr(r)})
-              </td>
-              <td style={{ padding: "8px 6px" }}>{r.jobNumber ?? ""}</td>
-              <td style={{ padding: "8px 6px" }}>{toNum(r.workCenter) || ""}</td>
-              <td style={{ padding: "8px 6px" }}>{r.operationNumber ?? ""}</td>
-              <td style={{ padding: "8px 6px" }}>{toNum(r.manHours).toFixed(2)}</td>
-              <td style={{ padding: "8px 6px" }}>{toNum(r.machineHours).toFixed(2)}</td>
-              <td style={{ padding: "8px 6px" }}>{r.piecesFinished ?? ""}</td>
-              <td style={{ padding: "8px 6px" }}>{r.piecesScrapped ?? ""}</td>
-              <td style={{ padding: "8px 6px" }}>{r.comments ?? ""}</td>
-            </tr>
-          ))}
+          {rows.map((r, idx) => {
+            const actual = getActualHours(r);
+            const est = getEstimatedHours(r);
+            const cycleMin = Number(r.cycleTime ?? 0) || 0;
+
+            return (
+              <tr key={idx} style={{ borderBottom: "1px solid #eee" }}>
+                <td style={{ padding: "8px 6px" }}>{String(r.ticketDate ?? "").slice(11, 19)}</td>
+                <td style={{ padding: "8px 6px" }}>{r.shift ?? ""}</td>
+                <td style={{ padding: "8px 6px" }}>
+                  {r.employeeName ?? ""} ({r.employeeCode ?? ""})
+                </td>
+                <td style={{ padding: "8px 6px" }}>{r.jobNumber ?? ""}</td>
+                <td style={{ padding: "8px 6px" }}>{r.workCenter ?? ""}</td>
+                <td style={{ padding: "8px 6px" }}>{r.operationNumber ?? ""}</td>
+                <td style={{ padding: "8px 6px" }}>{fmt2(actual)}</td>
+                <td style={{ padding: "8px 6px" }}>{fmt2(est)}</td>
+                <td style={{ padding: "8px 6px" }}>{cycleMin ? fmt6(cycleMin) : "0.000000"}</td>
+                <td style={{ padding: "8px 6px" }}>{r.piecesFinished ?? ""}</td>
+                <td style={{ padding: "8px 6px" }}>{r.piecesScrapped ?? ""}</td>
+                <td style={{ padding: "8px 6px" }}>{r.comments ?? ""}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

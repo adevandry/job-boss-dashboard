@@ -3,7 +3,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import ProductionHoursChart from "@/components/dashboard/ProductionHoursChart";
 
-
 type DateRange = {
   startDate: string;
   endDate: string;
@@ -14,25 +13,28 @@ type TimeTicket = {
   employeeName?: string;
   shift?: number | string;
   ticketDate?: string;
+
   manHours?: number;
   machineHours?: number;
+
   piecesFinished?: number;
   piecesScrapped?: number;
+
+  cycleTime?: number; // hours per part (estimated hours = good * cycleTime)
+
   workCenter?: number;
 };
 
 type ProductionRow = {
   date: string; // YYYY-MM-DD
-  morning: number;
-  night: number;
-  lightsOut: number;
+  morning: number; // now used for ESTIMATED hours
+  night: number; // now used for ESTIMATED hours
+  lightsOut: number; // now used for ESTIMATED hours
 };
 
 const SWISS_WORK_CENTERS = [
   10, 100, 101, 102, 103, 1001, 1010, 8001, 9104, 9106, 9108, 9110,
 ];
-
-// Put these in app/page.tsx, under SWISS_WORK_CENTERS, above Home()
 
 const EXCLUDED_EMPLOYEE_CODES = new Set(["1041", "1441", "106"]); // Yolanda, Emelio, Eliseo
 
@@ -43,7 +45,7 @@ function isSwissDepartmentTicket(t: any) {
   return SWISS_WORK_CENTERS.includes(Number(t.workCenter));
 }
 
-// For Production Hours (per your brother): "Actual hours is machineHours"
+// Actual production hours (per David): actual hours is machineHours
 function getProductionActualHours(t: any) {
   const machine = Number(t.machineHours || 0);
 
@@ -54,7 +56,6 @@ function getProductionActualHours(t: any) {
   const emp = String(t.employeeCode ?? "").trim();
 
   // If Lights Out stores machineHours as "hours per part", multiply.
-  // This heuristic prevents totals from being tiny when pieces are large.
   if (emp === "9999" && totalPieces > 0 && machine > 0 && machine < 1) {
     return totalPieces * machine;
   }
@@ -63,11 +64,11 @@ function getProductionActualHours(t: any) {
 }
 
 // Estimated (expected) production hours from cycle time
-// If you want "good only" for estimated hours, use good instead of totalPieces.
+// David wants the dashboard bars to show this.
 function getProductionEstimatedHours(t: any) {
   const good = Number(t.piecesFinished || 0);
-  const cycle = Number(t.cycleTime || 0); // hours per part, per your brother
-  return good * cycle;
+  const cycleMinutes = Number(t.cycleTime || 0);
+  return good * (cycleMinutes / 60);
 }
 
 function toLocalYmd(d: Date) {
@@ -93,6 +94,11 @@ function dateRangeDays(startYmd: string, endYmd: string) {
   return out;
 }
 
+// Shift rules (per David):
+// 1 = morning
+// 3 = night (employeeCode != 9999)
+// 3 = lights out (employeeCode == 9999)
+// Do not use 2
 function getCustomShift(t: TimeTicket) {
   const shift = Number(t.shift);
   const emp = String(t.employeeCode ?? "").trim();
@@ -100,27 +106,14 @@ function getCustomShift(t: TimeTicket) {
   if (shift === 1) return "morning";
   if (shift === 3) return emp === "9999" ? "lightsOut" : "night";
 
-  // David: do not use 2
   return null;
 }
 
-function getClockHours(t: TimeTicket) {
-  const emp = String(t.employeeCode ?? "").trim();
-  const man = Number(t.manHours || 0);
-  const machine = Number(t.machineHours || 0);
-
-  // Lights Out, use machine hours if present, otherwise fall back
-  if (emp === "9999") return machine || man || 0;
-
-  return man;
-}
-
-function transformToProductionHours(
+function transformToProductionHoursEstimated(
   tickets: TimeTicket[],
   startDate: string,
   endDate: string
 ): ProductionRow[] {
-  // Create a row for every day in the range, even if zero
   const days = dateRangeDays(startDate, endDate);
   const grouped: Record<string, ProductionRow> = {};
 
@@ -132,20 +125,20 @@ function transformToProductionHours(
     const date = t.ticketDate?.split("T")[0];
     if (!date) continue;
     if (!grouped[date]) continue;
-  
-    const hours = getProductionActualHours(t);
+
     const cs = getCustomShift(t);
-  
     if (!cs) continue; // skips shift 2
-  
-    if (cs === "morning") grouped[date].morning += hours;
-    else if (cs === "night") grouped[date].night += hours;
-    else if (cs === "lightsOut") grouped[date].lightsOut += hours;
+
+    const estHours = getProductionEstimatedHours(t);
+
+    if (cs === "morning") grouped[date].morning += estHours;
+    else if (cs === "night") grouped[date].night += estHours;
+    else if (cs === "lightsOut") grouped[date].lightsOut += estHours;
   }
 
   return days
-  .map((d) => grouped[d])
-  .filter((r) => (r.morning + r.night + r.lightsOut) > 0);
+    .map((d) => grouped[d])
+    .filter((r) => r.morning + r.night + r.lightsOut > 0);
 }
 
 export default function Page() {
@@ -199,21 +192,10 @@ export default function Page() {
         ? data.data
         : [];
 
-        console.log("First 5 tickets:", tickets.slice(0, 5));
-console.log(
-  "Shift values found:",
-  Array.from(new Set(tickets.map((t: any) => t.shift))).sort()
-);
-
       // Safeguard filter in case upstream ignores filters
       const swissTickets = tickets.filter((t: any) => isSwissDepartmentTicket(t));
 
-      console.log(
-        "Shift values in range:",
-        Array.from(new Set(tickets.map((t: any) => Number(t.shift)).filter(Boolean))).sort()
-      );
-
-      const rows = transformToProductionHours(
+      const rows = transformToProductionHoursEstimated(
         swissTickets,
         dateRange.startDate,
         dateRange.endDate
@@ -223,7 +205,7 @@ console.log(
     } catch (e: any) {
       setError(e?.message || "Unknown error");
       setProductionRows(
-        transformToProductionHours([], dateRange.startDate, dateRange.endDate)
+        transformToProductionHoursEstimated([], dateRange.startDate, dateRange.endDate)
       );
     } finally {
       setLoading(false);
@@ -244,6 +226,9 @@ console.log(
               <h1 className="text-2xl font-bold">Production Dashboard</h1>
               <p>Real-time manufacturing analytics and insights, custom-made for DeKing Precision</p>
               <p className="text-sm text-slate-600 mt-1">{rangeLabel}</p>
+              <p className="text-sm text-slate-600 mt-1">
+                Chart shows estimated hours (good parts x cycle time)
+              </p>
             </div>
 
             <div className="flex items-center gap-3">
@@ -266,9 +251,10 @@ console.log(
               <button
                 onClick={fetchTimeTickets}
                 disabled={loading}
-                className="px-4 py-2 rounded text-white bg-[#3E637D] hover:bg-[#0F2230] disabled:opacity-60 disabled:cursor-not-allowed">
+                className="px-4 py-2 rounded text-white bg-[#3E637D] hover:bg-[#0F2230] disabled:opacity-60 disabled:cursor-not-allowed"
+              >
                 {loading ? "Loading..." : "Refresh"}
-            </button>
+              </button>
             </div>
           </div>
 
@@ -301,13 +287,15 @@ console.log(
         </div>
 
         <ProductionHoursChart
-  rows={productionRows.map((r) => ({
-    day: r.date, // chart expects "day"
-    morning: r.morning ?? 0,
-    night: r.night ?? 0,
-    lightsOut: r.lightsOut ?? 0,
-  }))}
-/>
+          title="Estimated Production Hours"
+          subtitle="Estimated hours by day (good parts x cycle time), click a bar for details"
+          rows={productionRows.map((r) => ({
+            day: r.date,
+            morning: r.morning ?? 0,
+            night: r.night ?? 0,
+            lightsOut: r.lightsOut ?? 0,
+          }))}
+        />
 
         <Section title="Job Data">
           <div className="text-slate-500">Table placeholder</div>
