@@ -241,7 +241,7 @@ console.log(
         <div className="max-w-[1600px] mx-auto p-6 space-y-6">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <h1 className="text-2xl font-bold">Production Dashboard</h1>
+            <h1 className="text-2xl font-bold">Production Dashboard</h1>
               <p>Real-time manufacturing analytics and insights, custom-made for DeKing Precision</p>
               <p className="text-sm text-slate-600 mt-1">{rangeLabel}</p>
             </div>
