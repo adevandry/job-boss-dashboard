@@ -61,8 +61,32 @@ function fmtMd(value: string) {
 
 function fmtLabel(v: unknown) {
   const n = Number(v) || 0;
-  if (n < 0.1) return "";
+  if (n === 0) return "0";
+  if (n < 0.1) return n.toFixed(2); // optional for tiny non-zero values
   return n.toFixed(1);
+}
+
+function renderValueLabel(props: any) {
+  const { x, y, width, value } = props;
+
+  const v = Number(value);
+  const n = Number.isFinite(v) ? v : 0;
+
+  const ZERO_THRESHOLD = 0.05; // treat tiny values as 0 for labels
+  const isZeroish = Math.abs(n) < ZERO_THRESHOLD;
+
+  return (
+    <text
+      x={x + width / 2}
+      y={isZeroish ? y - 14 : y - 6}
+      textAnchor="middle"
+      fill="#132A3A"
+      fontSize={16}
+      fontWeight={600}
+    >
+      {isZeroish ? "0" : n.toFixed(1)}
+    </text>
+  );
 }
 
 function renderLegend() {
@@ -87,24 +111,30 @@ function renderLegend() {
 }
 
 function ClickableBar(props: any) {
-  const { x, y, width, height, fill, payload, onGo, shiftKey, radius = 8 } = props;
+  const { x, y, width, height, fill, payload, onGo, shiftKey } = props;
 
-  // Always draw something, even when height is tiny
-  const safeH = Math.max(2, Number(height || 0));
-
+  const MIN_CLICK_HEIGHT = 8; // feels clickable but not exaggerated
+  const safeH = Math.max(MIN_CLICK_HEIGHT, Number(height || 0));
+  const baseY = Number(y || 0) - (safeH - Number(height || 0));
   const day = payload?.day;
+
+  const r = Math.min(8, width / 2, safeH); // top corner radius
+
+  const path = `
+    M ${x} ${baseY + safeH}
+    L ${x} ${baseY + r}
+    Q ${x} ${baseY} ${x + r} ${baseY}
+    L ${x + width - r} ${baseY}
+    Q ${x + width} ${baseY} ${x + width} ${baseY + r}
+    L ${x + width} ${baseY + safeH}
+    Z
+  `;
 
   return (
     <g>
-      <rect
-        x={x}
-        y={Number(y || 0) + (safeH - Number(height || 0))}
-        width={width}
-        height={safeH}
+      <path
+        d={path}
         fill={fill}
-        rx={radius}
-        ry={radius}
-        tabIndex={-1}
         style={{ cursor: "pointer", outline: "none" }}
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => {
@@ -191,8 +221,8 @@ function CustomTooltip({ active, label, payload }: any) {
 
 export default function ProductionHoursChart({
   rows,
-  title = "Production Hours",
-  subtitle = "Morning, Night, and Lights Out totals by day",
+  title = "Production Hours (Machine Hours)",
+  subtitle = "Swiss only. Totals by day for Morning (Shift 1), Night (Shift 3), and Lights Out (Employee 9999).",
 }: {
   rows: InputRow[];
   title?: string;
@@ -262,7 +292,7 @@ export default function ProductionHoursChart({
                   <ClickableBar {...p} onGo={goDetails} shiftKey="morning" radius={8} />
                 )}
               >
-                <LabelList dataKey="morningRaw" position="top" formatter={fmtLabel} fill={BRAND.navy} />
+                <LabelList dataKey="morningRaw" content={renderValueLabel} />
               </Bar>
 
               <Bar
@@ -275,7 +305,7 @@ export default function ProductionHoursChart({
                   <ClickableBar {...p} onGo={goDetails} shiftKey="night" radius={8} />
                 )}
               >
-                <LabelList dataKey="nightRaw" position="top" formatter={fmtLabel} fill={BRAND.navy} />
+                <LabelList dataKey="nightRaw" content={renderValueLabel} />
               </Bar>
 
               <Bar
@@ -288,7 +318,7 @@ export default function ProductionHoursChart({
                   <ClickableBar {...p} onGo={goDetails} shiftKey="lightsOut" radius={8} />
                 )}
               >
-                <LabelList dataKey="lightsOutRaw" position="top" formatter={fmtLabel} fill={BRAND.navy} />
+                <LabelList dataKey="lightsOutRaw" content={renderValueLabel} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>

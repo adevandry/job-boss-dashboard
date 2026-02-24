@@ -43,23 +43,9 @@ function isSwissDepartmentTicket(t: any) {
   return SWISS_WORK_CENTERS.includes(Number(t.workCenter));
 }
 
-// For Production Hours (per your brother): "Actual hours is machineHours"
+// Production Hours = machineHours (matches DeKing's definition of Actual Hours)
 function getProductionActualHours(t: any) {
-  const machine = Number(t.machineHours || 0);
-
-  const good = Number(t.piecesFinished || 0);
-  const scrap = Number(t.piecesScrapped || 0);
-  const totalPieces = good + scrap;
-
-  const emp = String(t.employeeCode ?? "").trim();
-
-  // If Lights Out stores machineHours as "hours per part", multiply.
-  // This heuristic prevents totals from being tiny when pieces are large.
-  if (emp === "9999" && totalPieces > 0 && machine > 0 && machine < 1) {
-    return totalPieces * machine;
-  }
-
-  return machine;
+  return Number(t.machineHours || 0);
 }
 
 // Estimated (expected) production hours from cycle time

@@ -46,7 +46,7 @@ export type Ticket = {
     const mach = Number(t.machineHours ?? 0) || 0;
   
     // Default for most employees: use machineHours if present, else manHours
-    let hours = mach > 0 ? mach : man;
+    let hours = man;
   
     // Special rule: Lights Out (Tony, 9999)
     // If cycleTime and pieces are present, compute total time
