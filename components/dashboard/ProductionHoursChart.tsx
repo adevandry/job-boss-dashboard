@@ -23,47 +23,40 @@ type NormalRow = {
   day: string;
   morningRaw: number;
   nightRaw: number;
+  comboRaw: number;
   lightsOutRaw: number;
-
-  // Plot values, we use a tiny epsilon so a “zero” still shows a minimum bar
   morningPlot: number;
   nightPlot: number;
+  comboPlot: number;
   lightsOutPlot: number;
 };
 
 const BRAND = {
-  orange: "#FC380B",
-  navy: "#132A3A",
-  navyLight: "#3E637D",
+  morning: "#3E637D",
+  night: "#294152",
+  combo: "#0A1A26",
+  lightsOut: "#FC380B",
 };
 
 const LEGEND_ITEMS = [
-  { key: "morning", label: "Morning Shift", color: BRAND.navyLight },
-  { key: "night", label: "Evening Shift", color: BRAND.navy },
-  { key: "lightsOut", label: "Lights Out", color: BRAND.orange },
+  { key: "morning", label: "Morning Shift", color: BRAND.morning },
+  { key: "night", label: "Night Shift", color: BRAND.night },
+  { key: "combo", label: "Morning + Night", color: BRAND.combo },
+  { key: "lightsOut", label: "Lights Out", color: BRAND.lightsOut },
 ];
 
 const EPS = 0.0001;
 
 function fmtMd(value: string) {
-  // Handles "2026-01-17" or "2026-01-17T08:00:00Z"
   const ymd = String(value).slice(0, 10);
   const parts = ymd.split("-");
   if (parts.length !== 3) return ymd;
 
-  const m = Number(parts[1]); // removes leading zero
+  const m = Number(parts[1]);
   const d = Number(parts[2]);
   if (!Number.isFinite(m) || !Number.isFinite(d)) return ymd;
 
   return `${m}/${d}`;
-}
-
-
-function fmtLabel(v: unknown) {
-  const n = Number(v) || 0;
-  if (n === 0) return "0";
-  if (n < 0.1) return n.toFixed(2); // optional for tiny non-zero values
-  return n.toFixed(1);
 }
 
 function renderValueLabel(props: any) {
@@ -72,7 +65,7 @@ function renderValueLabel(props: any) {
   const v = Number(value);
   const n = Number.isFinite(v) ? v : 0;
 
-  const ZERO_THRESHOLD = 0.05; // treat tiny values as 0 for labels
+  const ZERO_THRESHOLD = 0.05;
   const isZeroish = Math.abs(n) < ZERO_THRESHOLD;
 
   return (
@@ -91,7 +84,7 @@ function renderValueLabel(props: any) {
 
 function renderLegend() {
   return (
-    <div style={{ display: "flex", justifyContent: "center", gap: 16, paddingTop: 10 }}>
+    <div style={{ display: "flex", justifyContent: "center", gap: 16, paddingTop: 10, flexWrap: "wrap" }}>
       {LEGEND_ITEMS.map((item) => (
         <div key={item.key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span
@@ -103,7 +96,7 @@ function renderLegend() {
               display: "inline-block",
             }}
           />
-          <span style={{ color: BRAND.navy }}>{item.label}</span>
+          <span style={{ color: "#132A3A" }}>{item.label}</span>
         </div>
       ))}
     </div>
@@ -113,12 +106,12 @@ function renderLegend() {
 function ClickableBar(props: any) {
   const { x, y, width, height, fill, payload, onGo, shiftKey } = props;
 
-  const MIN_CLICK_HEIGHT = 8; // feels clickable but not exaggerated
+  const MIN_CLICK_HEIGHT = 8;
   const safeH = Math.max(MIN_CLICK_HEIGHT, Number(height || 0));
   const baseY = Number(y || 0) - (safeH - Number(height || 0));
   const day = payload?.day;
 
-  const r = Math.min(8, width / 2, safeH); // top corner radius
+  const r = Math.min(8, width / 2, safeH);
 
   const path = `
     M ${x} ${baseY + safeH}
@@ -135,10 +128,10 @@ function ClickableBar(props: any) {
       <path
         d={path}
         fill={fill}
-        style={{ cursor: "pointer", outline: "none" }}
+        style={{ cursor: shiftKey ? "pointer" : "default", outline: "none" }}
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => {
-          if (day) onGo(day, shiftKey);
+          if (day && shiftKey) onGo(day, shiftKey);
         }}
       />
     </g>
@@ -146,9 +139,10 @@ function ClickableBar(props: any) {
 }
 
 const TOOLTIP_COLORS = {
-  morning: "#3E637D",   // Day shift (navyLight)
-  night: "#132A3A",     // Night shift (navy)
-  lightsOut: "#FC380B", // Lights Out (orange)
+  morning: BRAND.morning,
+  night: BRAND.night,
+  combo: BRAND.combo,
+  lightsOut: BRAND.lightsOut,
 };
 
 function getNum(obj: any, key: string) {
@@ -188,14 +182,13 @@ function TipLine({
 function CustomTooltip({ active, label, payload }: any) {
   if (!active || !payload?.length) return null;
 
-  // Recharts puts the full row data on payload[0].payload
   const row = payload?.[0]?.payload ?? {};
   const day = String(row.day ?? row.date ?? label ?? "");
 
-  // If you don’t have morningRaw/nightRaw/lightsOutRaw, this still works
-  const morning = getNum(row, "morningRaw") || getNum(row, "morning");
-  const night = getNum(row, "nightRaw") || getNum(row, "night");
-  const lightsOut = getNum(row, "lightsOutRaw") || getNum(row, "lightsOut");
+  const morning = getNum(row, "morningRaw");
+  const night = getNum(row, "nightRaw");
+  const combo = getNum(row, "comboRaw");
+  const lightsOut = getNum(row, "lightsOutRaw");
 
   return (
     <div
@@ -211,18 +204,18 @@ function CustomTooltip({ active, label, payload }: any) {
         {day}
       </div>
 
-      <TipLine label="Day shift" value={morning} color={TOOLTIP_COLORS.morning} />
+      <TipLine label="Morning shift" value={morning} color={TOOLTIP_COLORS.morning} />
       <TipLine label="Night shift" value={night} color={TOOLTIP_COLORS.night} />
-      <TipLine label="Lights out" value={lightsOut} color={TOOLTIP_COLORS.lightsOut} />
+      <TipLine label="Morning + Night" value={combo} color={TOOLTIP_COLORS.combo} />
+      <TipLine label="Lights Out" value={lightsOut} color={TOOLTIP_COLORS.lightsOut} />
     </div>
   );
 }
 
-
 export default function ProductionHoursChart({
   rows,
-  title = "Production Hours (Machine Hours)",
-  subtitle = "Swiss only. Totals by day for Morning (Shift 1), Night (Shift 3), and Lights Out (Employee 9999).",
+  title = "Production Hours (Estimated Hours)",
+  subtitle = "Swiss only. Estimated hours by day for Morning, Night, Morning + Night combined, and Lights Out.",
 }: {
   rows: InputRow[];
   title?: string;
@@ -234,15 +227,18 @@ export default function ProductionHoursChart({
     const day = String(r.day ?? r.date ?? "");
     const morningRaw = Number(r.morning ?? 0);
     const nightRaw = Number(r.night ?? 0);
+    const comboRaw = morningRaw + nightRaw;
     const lightsOutRaw = Number(r.lightsOut ?? 0);
 
     return {
       day,
       morningRaw,
       nightRaw,
+      comboRaw,
       lightsOutRaw,
       morningPlot: morningRaw === 0 ? EPS : morningRaw,
       nightPlot: nightRaw === 0 ? EPS : nightRaw,
+      comboPlot: comboRaw === 0 ? EPS : comboRaw,
       lightsOutPlot: lightsOutRaw === 0 ? EPS : lightsOutRaw,
     };
   });
@@ -259,7 +255,7 @@ export default function ProductionHoursChart({
         <p className="text-sm text-slate-600 mt-1">{subtitle}</p>
       </div>
 
-      <div className="p-6" style={{ height: 420 }}>
+      <div className="p-6" style={{ height: 440 }}>
         {normalized.length === 0 ? (
           <p className="text-sm text-slate-500">No production data yet.</p>
         ) : (
@@ -268,15 +264,15 @@ export default function ProductionHoursChart({
               data={normalized}
               margin={{ top: 24, right: 24, left: 10, bottom: 10 }}
               barCategoryGap={14}
-              barGap={6}
+              barGap={4}
               style={{ outline: "none" }}
             >
-              <XAxis 
-              dataKey="day" 
-              tickFormatter={(d) => fmtMd(String(d))}
-              tickLine={false}     // removes the little tick marks
-              axisLine={false}     // optional, removes the horizontal axis line too//  
-              tickMargin={10}   // pushes labels away from the axis
+              <XAxis
+                dataKey="day"
+                tickFormatter={(d) => fmtMd(String(d))}
+                tickLine={false}
+                axisLine={false}
+                tickMargin={10}
               />
               <YAxis />
               <Tooltip content={<CustomTooltip />} />
@@ -285,37 +281,48 @@ export default function ProductionHoursChart({
               <Bar
                 name="Morning Shift"
                 dataKey="morningPlot"
-                fill={BRAND.navyLight}
+                fill={BRAND.morning}
                 isAnimationActive={false}
-                maxBarSize={60}
+                maxBarSize={44}
                 shape={(p: any) => (
-                  <ClickableBar {...p} onGo={goDetails} shiftKey="morning" radius={8} />
+                  <ClickableBar {...p} onGo={goDetails} shiftKey="morning" />
                 )}
               >
                 <LabelList dataKey="morningRaw" content={renderValueLabel} />
               </Bar>
 
               <Bar
-                name="Evening Shift"
+                name="Night Shift"
                 dataKey="nightPlot"
-                fill={BRAND.navy}
+                fill={BRAND.night}
                 isAnimationActive={false}
-                maxBarSize={60}
+                maxBarSize={44}
                 shape={(p: any) => (
-                  <ClickableBar {...p} onGo={goDetails} shiftKey="night" radius={8} />
+                  <ClickableBar {...p} onGo={goDetails} shiftKey="night" />
                 )}
               >
                 <LabelList dataKey="nightRaw" content={renderValueLabel} />
               </Bar>
 
               <Bar
+                name="Morning + Night"
+                dataKey="comboPlot"
+                fill={BRAND.combo}
+                isAnimationActive={false}
+                maxBarSize={44}
+                shape={(p: any) => <ClickableBar {...p} onGo={() => {}} shiftKey={undefined} />}
+              >
+                <LabelList dataKey="comboRaw" content={renderValueLabel} />
+              </Bar>
+
+              <Bar
                 name="Lights Out"
                 dataKey="lightsOutPlot"
-                fill={BRAND.orange}
+                fill={BRAND.lightsOut}
                 isAnimationActive={false}
-                maxBarSize={60}
+                maxBarSize={44}
                 shape={(p: any) => (
-                  <ClickableBar {...p} onGo={goDetails} shiftKey="lightsOut" radius={8} />
+                  <ClickableBar {...p} onGo={goDetails} shiftKey="lightsOut" />
                 )}
               >
                 <LabelList dataKey="lightsOutRaw" content={renderValueLabel} />
@@ -327,7 +334,7 @@ export default function ProductionHoursChart({
 
       <div className="flex items-center justify-center gap-2 text-xs text-slate-500 pb-4">
         <TrendingUp className="w-3 h-3" />
-        Click on any bar to drill down into daily details
+        Click on any shift bar to drill down into daily details
       </div>
     </div>
   );

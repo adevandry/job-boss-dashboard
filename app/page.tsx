@@ -21,6 +21,37 @@ type TimeTicket = {
   workCenter?: number;
 };
 
+type RoutingRow = {
+  jobNumber?: string | null;
+  stepNumber?: number | null;
+  StepNo?: number | null;
+  StepNumber?: number | null;
+
+  workCenter?: string | number | null;
+  WorkCenter?: string | number | null;
+  workCenterNumber?: number | null;
+  WorkCenterNumber?: number | null;
+
+  operationNumber?: number | null;
+  OperationNumber?: number | null;
+  operationNo?: number | null;
+  OperationNo?: number | null;
+
+  cycleTime?: number | null;
+  CycleTime?: number | null;
+
+  cycleUnit?: string | null;
+  CycleUnit?: string | null;
+
+  setupTime?: number | null;
+  SetupTime?: number | null;
+
+  timeUnit?: string | null;
+  TimeUnit?: string | null;
+
+  percentEfficient?: number | null;
+};
+
 type ProductionRow = {
   date: string; // YYYY-MM-DD
   morning: number;
@@ -43,17 +74,29 @@ function isSwissDepartmentTicket(t: any) {
   return SWISS_WORK_CENTERS.includes(Number(t.workCenter));
 }
 
-// Production Hours = machineHours (matches DeKing's definition of Actual Hours)
-function getProductionActualHours(t: any) {
-  return Number(t.machineHours || 0);
+function rNum(obj: any, keys: string[]) {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v == null) continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
 }
 
-// Estimated (expected) production hours from cycle time
-// If you want "good only" for estimated hours, use good instead of totalPieces.
-function getProductionEstimatedHours(t: any) {
-  const good = Number(t.piecesFinished || 0);
-  const cycle = Number(t.cycleTime || 0); // hours per part, per your brother
-  return good * cycle;
+function rStr(obj: any, keys: string[]) {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v == null) continue;
+    const s = String(v).trim();
+    if (s) return s;
+  }
+  return "";
+}
+
+function toNum(v: unknown) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function toLocalYmd(d: Date) {
@@ -83,30 +126,159 @@ function getCustomShift(t: TimeTicket) {
   const shift = Number(t.shift);
   const emp = String(t.employeeCode ?? "").trim();
 
-  if (shift === 1) return "morning";
-  if (shift === 3) return emp === "9999" ? "lightsOut" : "night";
+  if (shift === 1) return "morning" as const;
+  if (shift === 3) return emp === "9999" ? "lightsOut" as const : "night" as const;
 
-  // David: do not use 2
   return null;
 }
 
-function getClockHours(t: TimeTicket) {
-  const emp = String(t.employeeCode ?? "").trim();
-  const man = Number(t.manHours || 0);
-  const machine = Number(t.machineHours || 0);
+function parseJobNumber(jobNumber: string) {
+  const m = jobNumber.match(/^(\d+)-(\d+)$/);
+  if (!m) return null;
 
-  // Lights Out, use machine hours if present, otherwise fall back
-  if (emp === "9999") return machine || man || 0;
+  const orderNumber = m[1];
+  const itemNumber = parseInt(m[2], 10);
 
-  return man;
+  if (!Number.isFinite(itemNumber)) return null;
+  return { orderNumber, itemNumber };
 }
 
-function transformToProductionHours(
+function routingWorkCenterNumber(rr: any): number {
+  const wcRaw = rStr(rr, ["workCenter", "WorkCenter"]);
+  if (wcRaw) {
+    const m = wcRaw.match(/^(\d+)\s*-/);
+    if (m) return Number(m[1]) || 0;
+  }
+
+  return rNum(rr, ["workCenterNumber", "WorkCenterNumber", "workCenter", "WorkCenter"]);
+}
+
+function routingOpNumber(rr: any): number {
+  return rNum(rr, ["operationNumber", "OperationNumber", "operationNo", "OperationNo"]);
+}
+
+function routingStepNumber(rr: any): number {
+  return rNum(rr, ["stepNumber", "StepNo", "StepNumber"]);
+}
+
+function getStepNo(rr: RoutingRow | null) {
+  return rNum(rr, ["StepNo", "stepNumber", "StepNumber"]);
+}
+
+function pickRoutingRowForTicket(ticket: TimeTicket, routingRows: RoutingRow[]) {
+  if (!routingRows.length) return null;
+
+  const ticketWC = toNum(ticket.workCenter);
+  const ticketOp = toNum(ticket.operationNumber);
+
+  if (ticketWC > 0 && ticketOp > 0) {
+    const exact = routingRows.find(
+      (rr: any) => routingWorkCenterNumber(rr) === ticketWC && routingOpNumber(rr) === ticketOp
+    );
+    if (exact) return exact;
+  }
+
+  if (ticketWC > 0) {
+    const wcMatches = routingRows.filter((rr: any) => routingWorkCenterNumber(rr) === ticketWC);
+    if (wcMatches.length) {
+      wcMatches.sort((a: any, b: any) => routingStepNumber(a) - routingStepNumber(b));
+      return wcMatches[0];
+    }
+  }
+
+  const copy = [...routingRows];
+  copy.sort((a: any, b: any) => routingStepNumber(a) - routingStepNumber(b));
+  return copy[0] ?? null;
+}
+
+function getSetupHours(rr: RoutingRow | null) {
+  const setupTime = rNum(rr, ["setupTime", "SetupTime"]);
+  const setupUnit = rStr(rr, ["timeUnit", "TimeUnit"]).trim().toUpperCase();
+
+  if (setupTime <= 0) return 0;
+  if (setupUnit === "M") return setupTime / 60;
+  if (setupUnit === "S") return setupTime / 3600;
+  return setupTime;
+}
+
+function computeRunHours(parts: number, rr: RoutingRow | null) {
+  if (!rr || parts <= 0) return 0;
+
+  const cycleTime = rNum(rr, ["cycleTime", "CycleTime"]);
+  const cycleUnit = rStr(rr, ["cycleUnit", "CycleUnit", "timeUnit", "TimeUnit"]).trim().toUpperCase();
+  const percentEfficient = rNum(rr, ["percentEfficient"]);
+
+  if (cycleTime <= 0 || percentEfficient <= 0) return 0;
+
+  const eff = percentEfficient / 100;
+
+  if (cycleUnit === "S") return (parts * cycleTime) / (3600 * eff);
+  if (cycleUnit === "M") return (parts * cycleTime) / (60 * eff);
+  if (cycleUnit === "H") return (parts * cycleTime) / eff;
+  if (cycleUnit === "P") return parts / (cycleTime * eff);
+
+  return 0;
+}
+
+function buildRunBucketKey(date: string, shift: string, ticket: TimeTicket, rr: RoutingRow | null) {
+  const job = String(ticket.jobNumber ?? "").trim();
+  const emp = String(ticket.employeeCode ?? "").trim();
+  const wc = toNum(ticket.workCenter) || routingWorkCenterNumber(rr);
+  const op = toNum(ticket.operationNumber) || routingOpNumber(rr);
+  const step = getStepNo(rr) || routingStepNumber(rr);
+
+  return `${date}__${shift}__${job}__${emp}__${wc}__${op}__${step}`;
+}
+
+function buildSetupDedupKey(date: string, shift: string, ticket: TimeTicket, rr: RoutingRow | null) {
+  const job = String(ticket.jobNumber ?? "").trim();
+  const wc = toNum(ticket.workCenter) || routingWorkCenterNumber(rr);
+  const op = toNum(ticket.operationNumber) || routingOpNumber(rr);
+  const step = getStepNo(rr) || routingStepNumber(rr);
+
+  return `${date}__${shift}__${job}__${wc}__${op}__${step}`;
+}
+
+async function fetchOrderRoutingsForJob(jobNumber: string): Promise<RoutingRow[]> {
+  const parsed = parseJobNumber(jobNumber);
+  if (!parsed) return [];
+
+  const { orderNumber, itemNumber } = parsed;
+
+  const qs = new URLSearchParams();
+  qs.set("take", "500");
+  qs.set("filters[orderNumber][eq]", orderNumber);
+  qs.set("filters[itemNumber][eq]", String(itemNumber));
+  qs.set(
+    "fields",
+    [
+      "jobNumber",
+      "itemNumber",
+      "stepNumber",
+      "workCenter",
+      "cycleTime",
+      "cycleUnit",
+      "setupTime",
+      "timeUnit",
+      "percentEfficient",
+    ].join(",")
+  );
+
+  const res = await fetch(`/api/order-routing?${qs.toString()}`, {
+    cache: "no-store",
+  });
+
+  if (!res.ok) return [];
+
+  const payload = await res.json();
+  return Array.isArray(payload?.Data) ? payload.Data : [];
+}
+
+async function transformToProductionHours(
   tickets: TimeTicket[],
   startDate: string,
   endDate: string
-): ProductionRow[] {
-  // Create a row for every day in the range, even if zero
+): Promise<ProductionRow[]> {
   const days = dateRangeDays(startDate, endDate);
   const grouped: Record<string, ProductionRow> = {};
 
@@ -114,24 +286,136 @@ function transformToProductionHours(
     grouped[day] = { date: day, morning: 0, night: 0, lightsOut: 0 };
   }
 
-  for (const t of tickets) {
-    const date = t.ticketDate?.split("T")[0];
-    if (!date) continue;
-    if (!grouped[date]) continue;
-  
-    const hours = getProductionActualHours(t);
-    const cs = getCustomShift(t);
-  
-    if (!cs) continue; // skips shift 2
-  
-    if (cs === "morning") grouped[date].morning += hours;
-    else if (cs === "night") grouped[date].night += hours;
-    else if (cs === "lightsOut") grouped[date].lightsOut += hours;
+  const swissTickets = tickets.filter((t: any) => isSwissDepartmentTicket(t));
+
+  const uniqueJobNumbers = Array.from(
+    new Set(
+      swissTickets
+        .map((t: any) => String(t.jobNumber ?? "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  const routingRowsByJob: Record<string, RoutingRow[]> = {};
+
+  if (uniqueJobNumbers.length) {
+    const pairs = await Promise.all(
+      uniqueJobNumbers.map(async (jobNumber) => {
+        const routingRows = await fetchOrderRoutingsForJob(jobNumber);
+        return [jobNumber, routingRows] as const;
+      })
+    );
+
+    for (const [jobNumber, routingRows] of pairs) {
+      routingRowsByJob[jobNumber] = routingRows;
+    }
   }
 
+  const runBuckets = new Map<
+    string,
+    {
+      date: string;
+      shift: "morning" | "night" | "lightsOut";
+      partsToday: number;
+      routingRow: RoutingRow | null;
+    }
+  >();
+
+  swissTickets.forEach((t) => {
+    const date = t.ticketDate?.split("T")[0];
+    if (!date || !grouped[date]) return;
+
+    const shift = getCustomShift(t);
+    if (!shift) return;
+
+    const jobNumber = String(t.jobNumber ?? "").trim();
+    const rr = jobNumber ? pickRoutingRowForTicket(t, routingRowsByJob[jobNumber] ?? []) : null;
+
+    const parts = toNum(t.piecesFinished) + toNum(t.piecesScrapped);
+    const key = buildRunBucketKey(date, shift, t, rr);
+
+    const existing = runBuckets.get(key);
+    if (existing) {
+      existing.partsToday += parts;
+      if (!existing.routingRow && rr) existing.routingRow = rr;
+      return;
+    }
+
+    runBuckets.set(key, {
+      date,
+      shift,
+      partsToday: parts,
+      routingRow: rr,
+    });
+  });
+
+  for (const bucket of runBuckets.values()) {
+    const est = computeRunHours(bucket.partsToday, bucket.routingRow);
+    grouped[bucket.date][bucket.shift] += est;
+  }
+  
+  // Match the drilldown logic for setup counting
+  const employeeCodesByStep = new Map<string, Set<string>>();
+  const hasProductionByStep = new Map<string, boolean>();
+  
+  swissTickets.forEach((t) => {
+    const date = t.ticketDate?.split("T")[0];
+    if (!date || !grouped[date]) return;
+  
+    const shift = getCustomShift(t);
+    if (!shift) return;
+  
+    const jobNumber = String(t.jobNumber ?? "").trim();
+    const rr = jobNumber ? pickRoutingRowForTicket(t, routingRowsByJob[jobNumber] ?? []) : null;
+  
+    const stepKey = buildSetupDedupKey(date, shift, t, rr);
+    const empCode = String(t.employeeCode ?? "").trim();
+    const parts = toNum(t.piecesFinished) + toNum(t.piecesScrapped);
+  
+    if (!employeeCodesByStep.has(stepKey)) {
+      employeeCodesByStep.set(stepKey, new Set<string>());
+    }
+    employeeCodesByStep.get(stepKey)!.add(empCode);
+  
+    if (parts > 0) {
+      hasProductionByStep.set(stepKey, true);
+    }
+  });
+  
+  const countedSetupKeys = new Set<string>();
+  
+  swissTickets.forEach((t) => {
+    const date = t.ticketDate?.split("T")[0];
+    if (!date || !grouped[date]) return;
+  
+    const shift = getCustomShift(t);
+    if (!shift) return;
+  
+    const jobNumber = String(t.jobNumber ?? "").trim();
+    const rr = jobNumber ? pickRoutingRowForTicket(t, routingRowsByJob[jobNumber] ?? []) : null;
+  
+    const parts = toNum(t.piecesFinished) + toNum(t.piecesScrapped);
+    const setupEst = getSetupHours(rr);
+    const isSetupRow = parts <= 0 && setupEst > 0;
+  
+    if (!isSetupRow) return;
+  
+    const setupKey = buildSetupDedupKey(date, shift, t, rr);
+    if (countedSetupKeys.has(setupKey)) return;
+  
+    const employeeCount = employeeCodesByStep.get(setupKey)?.size ?? 0;
+    const stepHasProduction = hasProductionByStep.get(setupKey) ?? false;
+  
+    const shouldCountSetup = !stepHasProduction || employeeCount > 1;
+    if (!shouldCountSetup) return;
+  
+    countedSetupKeys.add(setupKey);
+    grouped[date][shift] += setupEst;
+  });
+
   return days
-  .map((d) => grouped[d])
-  .filter((r) => (r.morning + r.night + r.lightsOut) > 0);
+    .map((d) => grouped[d])
+    .filter((r) => (r.morning + r.night + r.lightsOut) > 0);
 }
 
 export default function Page() {
@@ -199,7 +483,7 @@ console.log(
         Array.from(new Set(tickets.map((t: any) => Number(t.shift)).filter(Boolean))).sort()
       );
 
-      const rows = transformToProductionHours(
+      const rows = await transformToProductionHours(
         swissTickets,
         dateRange.startDate,
         dateRange.endDate
