@@ -19,6 +19,8 @@ type TimeTicket = {
   piecesFinished?: number;
   piecesScrapped?: number;
   workCenter?: number;
+  jobNumber?: string;
+  operationNumber?: number | string;
 };
 
 type RoutingRow = {
@@ -493,7 +495,12 @@ console.log(
     } catch (e: any) {
       setError(e?.message || "Unknown error");
       setProductionRows(
-        transformToProductionHours([], dateRange.startDate, dateRange.endDate)
+        dateRangeDays(dateRange.startDate, dateRange.endDate).map((d) => ({
+          date: d,
+          morning: 0,
+          night: 0,
+          lightsOut: 0,
+        }))
       );
     } finally {
       setLoading(false);
